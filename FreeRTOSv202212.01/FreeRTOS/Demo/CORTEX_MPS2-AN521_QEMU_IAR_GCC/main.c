@@ -1,247 +1,252 @@
-/* FreeRTOS includes. */
-#include "FreeRTOS.h"
-#include "task.h"
-
 /* Standard includes. */
 #include <stdio.h>
 #include <string.h>
 
-/* This project provides two demo applications.  A simple blinky style demo
-application, and a more comprehensive test and demo application.  The
-mainCREATE_SIMPLE_BLINKY_DEMO_ONLY setting is used to select between the two.
+/* FreeRTOS includes. */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
 
-If mainCREATE_SIMPLE_BLINKY_DEMO_ONLY is 1 then the blinky demo will be built.
-The blinky demo is implemented and described in main_blinky.c.
+/* Hardware includes */
+#include "CMSDK_CM33.h"
+#include "system_CMSDK_CM33.h"
 
-If mainCREATE_SIMPLE_BLINKY_DEMO_ONLY is not 1 then the comprehensive test and
-demo application will be built.  The comprehensive test and demo application is
-implemented and described in main_full.c. */
-#define mainCREATE_SIMPLE_BLINKY_DEMO_ONLY	1
+/* -------------------------- Definitions -------------------------- */
 
-/* printf() output uses the UART.  These constants define the addresses of the
-required UART registers. */
-#define UART0_ADDRESS 	( 0x40004000UL )
-#define UART0_DATA		( * ( ( ( volatile uint32_t * )( UART0_ADDRESS + 0UL ) ) ) )
-#define UART0_STATE		( * ( ( ( volatile uint32_t * )( UART0_ADDRESS + 4UL ) ) ) )
-#define UART0_CTRL		( * ( ( ( volatile uint32_t * )( UART0_ADDRESS + 8UL ) ) ) )
-#define UART0_BAUDDIV	( * ( ( ( volatile uint32_t * )( UART0_ADDRESS + 16UL ) ) ) )
-#define TX_BUFFER_MASK	( 1UL )
+#define mainCREATE_SIMPLE_BLINKY_DEMO_ONLY      1
 
-/*
- * main_blinky() is used when mainCREATE_SIMPLE_BLINKY_DEMO_ONLY is set to 1.
- * main_full() is used when mainCREATE_SIMPLE_BLINKY_DEMO_ONLY is set to 0.
- */
-extern void main_blinky( void );
-extern void main_full( void );
+/* Priorities */
+#define mainBLINKY_TASK_PRIORITY       ( tskIDLE_PRIORITY + 1 )
+#define mainUART_TASK_PRIORITY         ( tskIDLE_PRIORITY + 2 )
+#define mainBLINKY_DELAY_MS            pdMS_TO_TICKS( 500UL )
+#define mainUART_BUFFER_SIZE           ( 128 )
 
-/*
- * Only the comprehensive demo uses application hook (callback) functions.  See
- * https://www.FreeRTOS.org/a00016.html for more information.
- */
-void vFullDemoTickHookFunction( void );
-void vFullDemoIdleFunction( void );
+/* Hardware Mapping (Secure) */
+#define UART0               CMSDK_UART0_S
+#define UART_TX_MASK        CMSDK_UART_STATE_TXBF_Msk
+#define UART_RX_MASK        CMSDK_UART_STATE_RXBF_Msk
+#define LED_PORT            CMSDK_GPIO0_S
 
-/*
- * Printf() output is sent to the serial port.  Initialise the serial hardware.
- */
-static void prvUARTInit( void );
+/* ---------------------- Function Prototypes ---------------------- */
+void main_blinky( void );
+void main_full( void );
 
-/*-----------------------------------------------------------*/
+/* Tách hàm Init làm 2 phần */
+static void prvUARTInit_Hardware( void ); 
+static void prvUARTInit_NVIC( void );
 
-void main( void )
+static void vBlinkyTask( void *pvParameters );
+static void vUARTTask( void *pvParameters );
+int UART_Read_Blocking(char *buffer, int max_len);
+void UART_Write(const char *buffer, int length);
+
+/* Handles */
+static SemaphoreHandle_t xUARTSemaphore = NULL;
+static volatile int xBlinkingEnabled = 1;
+
+/* ------------------------- Main Function ------------------------- */
+int main( void )
 {
-	/* See https://www.freertos.org/freertos-on-qemu-mps2-an385-model.html for
-	instructions. */
+    /* 1. Init Hardware (Chưa bật ngắt NVIC) -> AN TOÀN */
+    prvUARTInit_Hardware();
 
-	/* Hardware initialisation.  printf() output uses the UART for IO. */
-	prvUARTInit();
+    /* In thông báo khởi động (Dùng Polling, không cần ngắt) */
+    printf("\r\n[System] MPS2-AN521 FreeRTOS Demo Starting (Secure)...\r\n");
 
-	/* The mainCREATE_SIMPLE_BLINKY_DEMO_ONLY setting is described at the top
-	of this file. */
-	#if ( mainCREATE_SIMPLE_BLINKY_DEMO_ONLY == 1 )
-	{
-		main_blinky();
-	}
-	#else
-	{
-		main_full();
-	}
-	#endif
+    #if ( mainCREATE_SIMPLE_BLINKY_DEMO_ONLY == 1 )
+    {
+        main_blinky();
+    }
+    #else
+    {
+        main_full();
+    }
+    #endif
+
+    return 0;
 }
-/*-----------------------------------------------------------*/
+
+/* ------------------------- Demo Entry --------------------------- */
+void main_blinky( void )
+{
+    /* 2. Tạo Semaphore trước */
+    xUARTSemaphore = xSemaphoreCreateBinary();
+    
+    if( xUARTSemaphore != NULL )
+    {
+        /* 3. Semaphore đã có, giờ mới được phép bật ngắt NVIC */
+        prvUARTInit_NVIC();
+
+        /* 4. Tạo Task */
+        xTaskCreate( vBlinkyTask, "Blinky", configMINIMAL_STACK_SIZE, NULL, mainBLINKY_TASK_PRIORITY, NULL );
+        xTaskCreate( vUARTTask, "UART", configMINIMAL_STACK_SIZE, NULL, mainUART_TASK_PRIORITY, NULL );
+
+        /* 5. Chạy Scheduler */
+        vTaskStartScheduler();
+    }
+    else
+    {
+        printf("Error: Cannot create UART Semaphore\r\n");
+    }
+
+    /* Nếu không đủ heap để tạo Semaphore/Task thì sẽ rơi xuống đây */
+    for( ;; );
+}
+
+void main_full( void ) { for( ;; ); }
+
+/* ------------------------- Task Functions ------------------------ */
+
+static void vBlinkyTask( void *pvParameters )
+{
+    ( void ) pvParameters;
+    for( ;; )
+    {
+        if( xBlinkingEnabled )
+        {
+            printf( "LED Blink!\r\n" );
+        }
+        vTaskDelay( mainBLINKY_DELAY_MS );
+    }
+}
+
+static void vUARTTask( void *pvParameters )
+{
+    char buffer[mainUART_BUFFER_SIZE];
+    int len;
+    ( void ) pvParameters;
+
+    for( ;; )
+    {
+        /* Chờ ngắt UART báo có dữ liệu */
+        if( xSemaphoreTake( xUARTSemaphore, portMAX_DELAY ) == pdTRUE )
+        {
+            len = UART_Read_Blocking(buffer, mainUART_BUFFER_SIZE);
+            if( len > 0 )
+            {
+                /* Echo lại */
+                UART_Write(buffer, len); 
+                
+                /* Xử lý lệnh */
+                if( strncmp(buffer, "BLINK ON", 8) == 0 ) xBlinkingEnabled = 1;
+                else if( strncmp(buffer, "BLINK OFF", 9) == 0 ) xBlinkingEnabled = 0;
+            }
+        }
+    }
+}
+
+/* ------------------------- Driver Functions ---------------------- */
+
+/* Hàm 1: Chỉ cấu hình thanh ghi UART, KHÔNG ĐỤNG ĐẾN NVIC */
+static void prvUARTInit_Hardware( void )
+{
+    UART0->BAUDDIV = 16;
+    
+    /* Bật TX, RX và cho phép ngắt tại module UART (nhưng CPU chưa nhận) */
+    UART0->CTRL = (1ul << CMSDK_UART_CTRL_TXEN_Pos) | 
+                  (1ul << CMSDK_UART_CTRL_RXEN_Pos) |
+                  (1ul << CMSDK_UART_CTRL_RXIRQEN_Pos);
+    
+    /* Xóa sạch các cờ ngắt tồn đọng */
+    UART0->INTCLEAR = CMSDK_UART_CTRL_RXIRQ_Msk | CMSDK_UART_CTRL_TXIRQ_Msk;
+}
+
+/* Hàm 2: Bật ngắt NVIC (Chỉ gọi khi OS đã sẵn sàng) */
+static void prvUARTInit_NVIC( void )
+{
+    NVIC_SetPriority(UARTRX0_IRQn, 5);
+    NVIC_EnableIRQ(UARTRX0_IRQn);
+}
+
+/* Hàm xử lý ngắt UART */
+void UARTRX0_Handler(void)
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    
+    /* Xóa cờ ngắt */
+    UART0->INTCLEAR = CMSDK_UART_CTRL_RXIRQ_Msk;
+    
+    /* Kiểm tra kỹ Semaphore khác NULL mới Give */
+    if( xUARTSemaphore != NULL )
+    {
+        xSemaphoreGiveFromISR(xUARTSemaphore, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
+int UART_Read_Blocking(char *buffer, int max_len)
+{
+    int count = 0;
+    while ( (UART0->STATE & UART_RX_MASK) && (count < max_len - 1) )
+    {
+        buffer[count] = (char)(UART0->DATA);
+        count++;
+    }
+    buffer[count] = '\0';
+    return count;
+}
+
+void UART_Write(const char *buffer, int length)
+{
+    int i;
+    for(i = 0; i < length; i++)
+    {
+        while( (UART0->STATE & UART_TX_MASK) );
+        UART0->DATA = buffer[i];
+    }
+}
+
+/* Retarget printf */
+int _write( int iFile, char *pcString, int iStringLength )
+{
+    ( void ) iFile;
+    UART_Write(pcString, iStringLength);
+    return iStringLength;
+}
+
+/* ------------------------- Hook Functions ------------------------ */
+/* Các hàm Hook giữ nguyên, nhưng thêm portDISABLE_INTERRUPTS để an toàn */
 
 void vApplicationMallocFailedHook( void )
 {
-	/* vApplicationMallocFailedHook() will only be called if
-	configUSE_MALLOC_FAILED_HOOK is set to 1 in FreeRTOSConfig.h.  It is a hook
-	function that will get called if a call to pvPortMalloc() fails.
-	pvPortMalloc() is called internally by the kernel whenever a task, queue,
-	timer or semaphore is created using the dynamic allocation (as opposed to
-	static allocation) option.  It is also called by various parts of the
-	demo application.  If heap_1.c, heap_2.c or heap_4.c is being used, then the
-	size of the	heap available to pvPortMalloc() is defined by
-	configTOTAL_HEAP_SIZE in FreeRTOSConfig.h, and the xPortGetFreeHeapSize()
-	API function can be used to query the size of free heap space that remains
-	(although it does not provide information on how the remaining heap might be
-	fragmented).  See http://www.freertos.org/a00111.html for more
-	information. */
-	printf( "\r\n\r\nMalloc failed\r\n" );
-	portDISABLE_INTERRUPTS();
-	for( ;; );
+    portDISABLE_INTERRUPTS();
+    for( ;; );
 }
-/*-----------------------------------------------------------*/
 
 void vApplicationStackOverflowHook( TaskHandle_t pxTask, char *pcTaskName )
 {
-	( void ) pcTaskName;
-	( void ) pxTask;
-
-	/* Run time stack overflow checking is performed if
-	configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2.  This hook
-	function is called if a stack overflow is detected. */
-	printf( "\r\n\r\nStack overflow in %s\r\n", pcTaskName );
-	portDISABLE_INTERRUPTS();
-	for( ;; );
+    (void)pxTask; (void)pcTaskName;
+    portDISABLE_INTERRUPTS();
+    for( ;; );
 }
-/*-----------------------------------------------------------*/
 
-void vApplicationTickHook( void )
+void vApplicationTickHook( void ) {}
+void vApplicationIdleHook( void ) {}
+void vApplicationDaemonTaskStartupHook( void ) {}
+
+void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize )
 {
-	/* This function will be called by each tick interrupt if
-	configUSE_TICK_HOOK is set to 1 in FreeRTOSConfig.h.  User code can be
-	added here, but the tick hook is called from an interrupt context, so
-	code must not attempt to block, and only the interrupt safe FreeRTOS API
-	functions can be used (those that end in FromISR()). */
-
-	#if ( mainCREATE_SIMPLE_BLINKY_DEMO_ONLY != 1 )
-	{
-		extern void vFullDemoTickHookFunction( void );
-
-		vFullDemoTickHookFunction();
-	}
-	#endif /* mainCREATE_SIMPLE_BLINKY_DEMO_ONLY */
+    static StaticTask_t xIdleTaskTCB;
+    static StackType_t uxIdleTaskStack[ configMINIMAL_STACK_SIZE ];
+    *ppxIdleTaskTCBBuffer = &xIdleTaskTCB;
+    *ppxIdleTaskStackBuffer = uxIdleTaskStack;
+    *pulIdleTaskStackSize = configMINIMAL_STACK_SIZE;
 }
-/*-----------------------------------------------------------*/
 
-void vApplicationDaemonTaskStartupHook( void )
+void vApplicationGetTimerTaskMemory( StaticTask_t **ppxTimerTaskTCBBuffer, StackType_t **ppxTimerTaskStackBuffer, uint32_t *pulTimerTaskStackSize )
 {
-	/* This function will be called once only, when the daemon task starts to
-	execute (sometimes called the timer task).  This is useful if the
-	application includes initialisation code that would benefit from executing
-	after the scheduler has been started. */
+    static StaticTask_t xTimerTaskTCB;
+    static StackType_t uxTimerTaskStack[ configTIMER_TASK_STACK_DEPTH ];
+    *ppxTimerTaskTCBBuffer = &xTimerTaskTCB;
+    *ppxTimerTaskStackBuffer = uxTimerTaskStack;
+    *pulTimerTaskStackSize = configTIMER_TASK_STACK_DEPTH;
 }
-/*-----------------------------------------------------------*/
 
 void vAssertCalled( const char *pcFileName, uint32_t ulLine )
 {
-volatile uint32_t ulSetToNonZeroInDebuggerToContinue = 0;
-
-	/* Called if an assertion passed to configASSERT() fails.  See
-	http://www.freertos.org/a00110.html#configASSERT for more information. */
-
-	printf( "ASSERT! Line %d, file %s\r\n", ( int ) ulLine, pcFileName );
-
- 	taskENTER_CRITICAL();
-	{
-		/* You can step out of this function to debug the assertion by using
-		the debugger to set ulSetToNonZeroInDebuggerToContinue to a non-zero
-		value. */
-		while( ulSetToNonZeroInDebuggerToContinue == 0 )
-		{
-			__asm volatile( "NOP" );
-			__asm volatile( "NOP" );
-		}
-	}
-	taskEXIT_CRITICAL();
-}
-/*-----------------------------------------------------------*/
-
-/* configUSE_STATIC_ALLOCATION is set to 1, so the application must provide an
-implementation of vApplicationGetIdleTaskMemory() to provide the memory that is
-used by the Idle task. */
-void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize )
-{
-/* If the buffers to be provided to the Idle task are declared inside this
-function then they must be declared static - otherwise they will be allocated on
-the stack and so not exists after this function exits. */
-static StaticTask_t xIdleTaskTCB;
-static StackType_t uxIdleTaskStack[ configMINIMAL_STACK_SIZE ];
-
-	/* Pass out a pointer to the StaticTask_t structure in which the Idle task's
-	state will be stored. */
-	*ppxIdleTaskTCBBuffer = &xIdleTaskTCB;
-
-	/* Pass out the array that will be used as the Idle task's stack. */
-	*ppxIdleTaskStackBuffer = uxIdleTaskStack;
-
-	/* Pass out the size of the array pointed to by *ppxIdleTaskStackBuffer.
-	Note that, as the array is necessarily of type StackType_t,
-	configMINIMAL_STACK_SIZE is specified in words, not bytes. */
-	*pulIdleTaskStackSize = configMINIMAL_STACK_SIZE;
-}
-/*-----------------------------------------------------------*/
-
-/* configUSE_STATIC_ALLOCATION and configUSE_TIMERS are both set to 1, so the
-application must provide an implementation of vApplicationGetTimerTaskMemory()
-to provide the memory that is used by the Timer service task. */
-void vApplicationGetTimerTaskMemory( StaticTask_t **ppxTimerTaskTCBBuffer, StackType_t **ppxTimerTaskStackBuffer, uint32_t *pulTimerTaskStackSize )
-{
-/* If the buffers to be provided to the Timer task are declared inside this
-function then they must be declared static - otherwise they will be allocated on
-the stack and so not exists after this function exits. */
-static StaticTask_t xTimerTaskTCB;
-static StackType_t uxTimerTaskStack[ configTIMER_TASK_STACK_DEPTH ];
-
-	/* Pass out a pointer to the StaticTask_t structure in which the Timer
-	task's state will be stored. */
-	*ppxTimerTaskTCBBuffer = &xTimerTaskTCB;
-
-	/* Pass out the array that will be used as the Timer task's stack. */
-	*ppxTimerTaskStackBuffer = uxTimerTaskStack;
-
-	/* Pass out the size of the array pointed to by *ppxTimerTaskStackBuffer.
-	Note that, as the array is necessarily of type StackType_t,
-	configMINIMAL_STACK_SIZE is specified in words, not bytes. */
-	*pulTimerTaskStackSize = configTIMER_TASK_STACK_DEPTH;
-}
-/*-----------------------------------------------------------*/
-
-static void prvUARTInit( void )
-{
-	UART0_BAUDDIV = 16;
-	UART0_CTRL = 1;
-}
-/*-----------------------------------------------------------*/
-
-int __write( int iFile, char *pcString, int iStringLength )
-{
-	int iNextChar;
-
-	/* Avoid compiler warnings about unused parameters. */
-	( void ) iFile;
-
-	/* Output the formatted string to the UART. */
-	for( iNextChar = 0; iNextChar < iStringLength; iNextChar++ )
-	{
-		while( ( UART0_STATE & TX_BUFFER_MASK ) != 0 );
-		UART0_DATA = *pcString;
-		pcString++;
-	}
-
-	return iStringLength;
-}
-/*-----------------------------------------------------------*/
-
-void *malloc( size_t size )
-{
-	( void ) size;
-
-	/* This project uses heap_4 so doesn't set up a heap for use by the C
-	library - but something is calling the C library malloc().  See
-	https://freertos.org/a00111.html for more information. */
-	printf( "\r\n\r\nUnexpected call to malloc() - should be usine pvPortMalloc()\r\n" );
-	portDISABLE_INTERRUPTS();
-	for( ;; );
-
+    /* Dùng vòng lặp chết, không printf để tránh đệ quy */
+    volatile uint32_t spin = 1;
+    while(spin);
 }
 
+void *malloc( size_t size ) { (void)size; for( ;; ); }

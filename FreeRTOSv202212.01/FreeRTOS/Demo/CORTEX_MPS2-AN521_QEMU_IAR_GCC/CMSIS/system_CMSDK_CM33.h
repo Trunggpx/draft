@@ -201,7 +201,7 @@ typedef enum IRQn
 #define __DSP_PRESENT             1U        /* DSP extension present */
 
 #include "core_cm33.h"                      /* Processor and core peripherals */
-#include "system_CMSDK_CM33.h"              /* System Header */                /* System Header */
+#include "system_ARMCM33.h"                 /* System Header */
 
 /* -------  Start of section using anonymous unions and disabling warnings  ------- */
 #if   defined (__CC_ARM)

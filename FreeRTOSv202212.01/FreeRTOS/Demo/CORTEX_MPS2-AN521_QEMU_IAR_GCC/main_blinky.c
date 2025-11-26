@@ -6,168 +6,175 @@
 /* FreeRTOS includes. */
 #include "FreeRTOS.h"
 #include "task.h"
-#include "timers.h"
 #include "queue.h"
 #include "semphr.h"
-#include "FreeRTOSConfig.h"
-#include "portmacro.h"
 
-/* Mock hardware specific includes. */
-#include "mock_uart.h"
-#include "mock_gpio.h"
+/* Hardware includes */
+#include "system_CMSDK_CM33.h" /* <--- QUAN TRỌNG: File header bạn vừa làm */
 
-/* Priorities at which the tasks are created. */
+/* Priorities */
 #define mainBLINKY_TASK_PRIORITY      ( tskIDLE_PRIORITY + 1 )
 #define mainUART_TASK_PRIORITY        ( tskIDLE_PRIORITY + 2 )
-
-/* The rate at which the LED blinks. */
 #define mainBLINKY_DELAY_MS           pdMS_TO_TICKS( 500UL )
-
-/* UART buffer size. */
 #define mainUART_BUFFER_SIZE          ( 128 )
+
+/* Định nghĩa Hardware cho AN521 */
+#define LED_PORT                      CMSDK_GPIO0_NS
+#define LED_PIN_MASK                  (1UL << 0) /* Giả sử LED ở Bit 0 */
+#define UART_PORT                     CMSDK_UART0_NS
 
 /* Function declarations */
 static void vBlinkyTask(void *pvParameters);
 static void vUARTTask(void *pvParameters);
-static void vUARTInterruptHandler(void);
 
-/* UART handle */
+/* Driver Functions (Thay thế Mock) */
+void Hardware_Init(void);
+void LED_Toggle(void);
+int UART_Read_Blocking(char *buffer, int max_len);
+void UART_Write(const char *buffer, int length);
+
+/* Handles */
 static SemaphoreHandle_t xUARTSemaphore = NULL;
-
-/* Flag to control blinking */
 static volatile int xBlinkingEnabled = 1;
-
-/*-----------------------------------------------------------*/
-
-/* Blinky task to blink an LED */
-static void vBlinkyTask(void *pvParameters)
-{
-    for (;;)
-    {
-        if (xBlinkingEnabled)
-        {
-            /* Toggle the LED */
-            gpio_toggle(GPIO_LED1);
-        }
-        
-        /* Delay for a period */
-        vTaskDelay(mainBLINKY_DELAY_MS);
-    }
-}
-
-/* UART task to handle ground system communication */
-static void vUARTTask(void *pvParameters)
-{
-    char buffer[mainUART_BUFFER_SIZE];
-    int len;
-
-    for (;;)
-    {
-        /* Wait for UART data */
-        if (xSemaphoreTake(xUARTSemaphore, portMAX_DELAY) == pdTRUE)
-        {
-            /* Read the received data */
-            len = uart_read(buffer, mainUART_BUFFER_SIZE);
-
-            /* Echo the received data back */
-            uart_write(buffer, len);
-
-            /* Process the received command (if any) */
-            if (strncmp(buffer, "BLINK ON", len) == 0)
-            {
-                xBlinkingEnabled = 1;
-            }
-            else if (strncmp(buffer, "BLINK OFF", len) == 0)
-            {
-                xBlinkingEnabled = 0;
-            }
-        }
-    }
-}
-
-/* UART interrupt handler */
-void vUARTInterruptHandler(void)
-{
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-    /* Give the semaphore to unblock the UART task */
-    xSemaphoreGiveFromISR(xUARTSemaphore, &xHigherPriorityTaskWoken);
-
-    /* Perform a context switch if necessary */
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-}
 
 /*-----------------------------------------------------------*/
 
 void main_blinky(void)
 {
-    /* Initialize GPIO for LED */
-    gpio_init(GPIO_LED1);
+    /* Initialize Hardware (Real Registers) */
+    Hardware_Init();
 
-    /* Initialize UART */
-    uart_init();
-    uart_set_interrupt_handler(vUARTInterruptHandler);
-
-    /* Create the semaphore for UART handling */
+    /* Create semaphore */
     xUARTSemaphore = xSemaphoreCreateBinary();
 
-    /* Create the blinky task */
+    /* Create tasks */
     xTaskCreate(vBlinkyTask, "Blinky", configMINIMAL_STACK_SIZE, NULL, mainBLINKY_TASK_PRIORITY, NULL);
-
-    /* Create the UART task */
     xTaskCreate(vUARTTask, "UART", configMINIMAL_STACK_SIZE, NULL, mainUART_TASK_PRIORITY, NULL);
 
-    /* Start the scheduler so the created tasks start executing. */
+    /* Start scheduler */
     vTaskStartScheduler();
 
-    /* Infinite loop */
     for (;;);
 }
 
 /*-----------------------------------------------------------*/
-/* Mock implementations of UART and GPIO functions */
 
-/* GPIO implementation */
-void gpio_init(int pin)
+static void vBlinkyTask(void *pvParameters)
 {
-    printf("GPIO %d initialized.\n", pin);
+    (void) pvParameters;
+    for (;;)
+    {
+        if (xBlinkingEnabled)
+        {
+            LED_Toggle();
+            /* In ra console để debug trên QEMU */
+            printf("LED Toggled\n"); 
+        }
+        vTaskDelay(mainBLINKY_DELAY_MS);
+    }
 }
 
-void gpio_toggle(int pin)
+static void vUARTTask(void *pvParameters)
 {
-    static int state = 0;
-    state = !state;
-    printf("GPIO %d toggled to %d.\n", pin, state);
-}
+    char buffer[mainUART_BUFFER_SIZE];
+    int len;
+    (void) pvParameters;
 
-/* UART implementation */
-void uart_init(void)
-{
-    printf("UART initialized.\n");
-}
+    for (;;)
+    {
+        /* Chờ ngắt UART báo có dữ liệu */
+        if (xSemaphoreTake(xUARTSemaphore, portMAX_DELAY) == pdTRUE)
+        {
+            /* Đọc dữ liệu thật từ thanh ghi */
+            len = UART_Read_Blocking(buffer, mainUART_BUFFER_SIZE);
 
-void uart_set_interrupt_handler(void (*handler)(void))
-{
-    printf("UART interrupt handler set.\n");
-}
+            if (len > 0)
+            {
+                /* Echo back */
+                UART_Write(buffer, len);
 
-int uart_read(char *buffer, int length)
-{
-    /* Simulate receiving "BLINK ON" or "BLINK OFF" command from ground station */
-    strcpy(buffer, "BLINK ON");
-    return strlen(buffer);
-}
-
-void uart_write(const char *buffer, int length)
-{
-    printf("UART write: %.*s\n", length, buffer);
+                /* Check commands */
+                if (strncmp(buffer, "BLINK ON", 8) == 0)
+                {
+                    xBlinkingEnabled = 1;
+                    UART_Write("\r\nCMD: ON\r\n", 11);
+                }
+                else if (strncmp(buffer, "BLINK OFF", 9) == 0)
+                {
+                    xBlinkingEnabled = 0;
+                    UART_Write("\r\nCMD: OFF\r\n", 12);
+                }
+            }
+        }
+    }
 }
 
 /*-----------------------------------------------------------*/
+/* REAL HARDWARE IMPLEMENTATION (Driver) */
+/*-----------------------------------------------------------*/
 
-/* Idle hook function implementation */
-void vApplicationIdleHook(void)
+/* Xử lý ngắt UART thật */
+void UARTRX0_Handler(void)
 {
-    /* This function is called on each cycle of the idle task. */
-    /* You can add any idle time processing here if needed. */
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    /* Xóa cờ ngắt RX */
+    UART_PORT->INTCLEAR = CMSDK_UART_CTRL_RXIRQ_Msk;
+
+    /* Báo cho Task xử lý */
+    xSemaphoreGiveFromISR(xUARTSemaphore, &xHigherPriorityTaskWoken);
+
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+void Hardware_Init(void)
+{
+    /* 1. Init LED (GPIO0) */
+    /* Enable Output cho Pin 0 */
+    LED_PORT->OUTENABLESET = LED_PIN_MASK; 
+    
+    /* 2. Init UART0 */
+    UART_PORT->BAUDDIV = 16; 
+    
+    /* Bật TX, RX và Ngắt nhận (RX Interrupt) */
+    UART_PORT->CTRL = (1ul << CMSDK_UART_CTRL_TXEN_Pos)    | 
+                      (1ul << CMSDK_UART_CTRL_RXEN_Pos)    |
+                      (1ul << CMSDK_UART_CTRL_RXIRQEN_Pos); // Bật ngắt nhận
+
+    /* 3. Đăng ký ngắt với NVIC (Cortex-M33) */
+    /* Lưu ý: Tên hàm UARTRX0_Handler phải khớp với file startup_... .s */
+    NVIC_EnableIRQ(UARTRX0_IRQn);
+}
+
+void LED_Toggle(void)
+{
+    /* Đọc trạng thái hiện tại và đảo bit */
+    uint32_t current = LED_PORT->DATAOUT;
+    LED_PORT->DATAOUT = current ^ LED_PIN_MASK;
+}
+
+int UART_Read_Blocking(char *buffer, int max_len)
+{
+    int count = 0;
+    
+    /* Đọc tất cả dữ liệu có trong FIFO của UART */
+    /* Kiểm tra bit RX Buffer Full (RXBF) -> Có dữ liệu thì đọc */
+    while ( (UART_PORT->STATE & CMSDK_UART_STATE_RXBF_Msk) && (count < max_len - 1) )
+    {
+        buffer[count] = (char)(UART_PORT->DATA);
+        count++;
+    }
+    buffer[count] = '\0'; // Null terminate
+    return count;
+}
+
+void UART_Write(const char *buffer, int length)
+{
+    int i;
+    for(i = 0; i < length; i++)
+    {
+        /* Chờ TX Buffer rỗng */
+        while( (UART_PORT->STATE & CMSDK_UART_STATE_TXBF_Msk) );
+        UART_PORT->DATA = buffer[i];
+    }
 }

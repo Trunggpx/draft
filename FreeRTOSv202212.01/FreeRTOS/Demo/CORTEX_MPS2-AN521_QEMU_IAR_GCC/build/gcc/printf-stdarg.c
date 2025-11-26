@@ -27,9 +27,31 @@
 
 #include <stdarg.h>
 
-#define UART0_ADDRESS 	( 0x40004000UL )
-#define UART0_DATA		( * ( ( ( volatile unsigned int * )( UART0_ADDRESS + 0UL ) ) ) )
-#define putchar(c)      UART0_DATA = c
+/* --- CẤU HÌNH CHO MPS2-AN521 (Cortex-M33) --- */
+
+/* 1. Include file header hệ thống (Tên file do bạn đặt) */
+#include "system_CMSDK_CM33.h"
+
+/* 2. Hàm gửi 1 ký tự ra UART0 (Non-secure) */
+/* Sửa hàm uart_putc */
+static void uart_putc(int c) 
+{
+/* Đổi CMSDK_UART0_NS thành CMSDK_UART0_S */
+    while( (CMSDK_UART0_S->STATE & CMSDK_UART_STATE_TXBF_Msk) );
+    
+    CMSDK_UART0_S->DATA = c;
+    
+    if (c == '\n') {
+        while( (CMSDK_UART0_S->STATE & CMSDK_UART_STATE_TXBF_Msk) );
+        CMSDK_UART0_S->DATA = '\r';
+    }
+}
+
+/* 3. Map macro putchar vào hàm driver vừa viết */
+#define putchar(c)      uart_putc(c)
+
+/* --- HẾT PHẦN CẤU HÌNH --- */
+
 
 static int tiny_print( char **out, const char *format, va_list args, unsigned int buflen );
 
@@ -232,81 +254,18 @@ int snprintf( char *buf, unsigned int count, const char *format, ... )
         return tiny_print( &buf, format, args, count );
 }
 
-
-#ifdef TEST_PRINTF
-int main(void)
-{
-	char *ptr = "Hello world!";
-	char *np = 0;
-	int i = 5;
-	unsigned int bs = sizeof(int)*8;
-	int mi;
-	char buf[80];
-
-	mi = (1 << (bs-1)) + 1;
-	printf("%s\n", ptr);
-	printf("printf test\n");
-	printf("%s is null pointer\n", np);
-	printf("%d = 5\n", i);
-	printf("%d = - max int\n", mi);
-	printf("char %c = 'a'\n", 'a');
-	printf("hex %x = ff\n", 0xff);
-	printf("hex %02x = 00\n", 0);
-	printf("signed %d = unsigned %u = hex %x\n", -3, -3, -3);
-	printf("%d %s(s)%", 0, "message");
-	printf("\n");
-	printf("%d %s(s) with %%\n", 0, "message");
-	sprintf(buf, "justif: \"%-10s\"\n", "left"); printf("%s", buf);
-	sprintf(buf, "justif: \"%10s\"\n", "right"); printf("%s", buf);
-	sprintf(buf, " 3: %04d zero padded\n", 3); printf("%s", buf);
-	sprintf(buf, " 3: %-4d left justif.\n", 3); printf("%s", buf);
-	sprintf(buf, " 3: %4d right justif.\n", 3); printf("%s", buf);
-	sprintf(buf, "-3: %04d zero padded\n", -3); printf("%s", buf);
-	sprintf(buf, "-3: %-4d left justif.\n", -3); printf("%s", buf);
-	sprintf(buf, "-3: %4d right justif.\n", -3); printf("%s", buf);
-
-	return 0;
-}
+/* [IMPORTANT NOTE]
+   Nếu trong project của bạn, file main.c đã có hàm _write hoặc __write để redirect printf 
+   của thư viện chuẩn (Standard C Library), thì bạn KHÔNG cần hàm write dummy dưới đây.
+   Nếu linker báo lỗi "undefined reference to write", bạn có thể bỏ comment đoạn này.
+*/
 
 /*
- * if you compile this file with
- *   gcc -Wall $(YOUR_C_OPTIONS) -DTEST_PRINTF -c printf.c
- * you will get a normal warning:
- *   printf.c:214: warning: spurious trailing `%' in format
- * this line is testing an invalid % at the end of the format string.
- *
- * this should display (on 32bit int machine) :
- *
- * Hello world!
- * printf test
- * (null) is null pointer
- * 5 = 5
- * -2147483647 = - max int
- * char a = 'a'
- * hex ff = ff
- * hex 00 = 00
- * signed -3 = unsigned 4294967293 = hex fffffffd
- * 0 message(s)
- * 0 message(s) with %
- * justif: "left      "
- * justif: "     right"
- *  3: 0003 zero padded
- *  3: 3    left justif.
- *  3:    3 right justif.
- * -3: -003 zero padded
- * -3: -3   left justif.
- * -3:   -3 right justif.
- */
-
-#endif
-
-
-/* To keep linker happy. */
-int	write( int i, char* c, int n)
+int write( int i, char* c, int n)
 {
 	(void)i;
 	(void)n;
 	(void)c;
 	return 0;
 }
-
+*/

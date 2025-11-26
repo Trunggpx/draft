@@ -1,4 +1,6 @@
-output/event_groups.o: ../../../..//Source/event_groups.c \
+output/portasm.o: \
+ ../../../..//Source/portable/GCC/ARM_CM33_NTZ/non_secure/portasm.c \
+ ../../../..//Source/portable/GCC/ARM_CM33_NTZ/non_secure/portasm.h \
  ../../../..//Source/include/FreeRTOS.h FreeRTOSConfig.h \
  ../../../..//Source/include/projdefs.h \
  ../../../..//Source/include/portable.h \
@@ -6,10 +8,8 @@ output/event_groups.o: ../../../..//Source/event_groups.c \
  ../../../..//Source/portable/GCC/ARM_CM33_NTZ/non_secure/portmacro.h \
  ../../../..//Source/portable/GCC/ARM_CM33_NTZ/non_secure/portmacrocommon.h \
  ../../../..//Source/include/mpu_wrappers.h \
- ../../../..//Source/include/task.h ../../../..//Source/include/list.h \
- ../../../..//Source/include/timers.h ../../../..//Source/include/task.h \
- ../../../..//Source/include/event_groups.h \
- ../../../..//Source/include/timers.h
+ ../../../..//Source/include/mpu_wrappers.h
+../../../..//Source/portable/GCC/ARM_CM33_NTZ/non_secure/portasm.h:
 ../../../..//Source/include/FreeRTOS.h:
 FreeRTOSConfig.h:
 ../../../..//Source/include/projdefs.h:
@@ -18,9 +18,4 @@ FreeRTOSConfig.h:
 ../../../..//Source/portable/GCC/ARM_CM33_NTZ/non_secure/portmacro.h:
 ../../../..//Source/portable/GCC/ARM_CM33_NTZ/non_secure/portmacrocommon.h:
 ../../../..//Source/include/mpu_wrappers.h:
-../../../..//Source/include/task.h:
-../../../..//Source/include/list.h:
-../../../..//Source/include/timers.h:
-../../../..//Source/include/task.h:
-../../../..//Source/include/event_groups.h:
-../../../..//Source/include/timers.h:
+../../../..//Source/include/mpu_wrappers.h:
